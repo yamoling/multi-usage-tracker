@@ -10,6 +10,10 @@ import { ExtensionPreferences } from "resource:///org/gnome/Shell/Extensions/js/
 import { claudeCodeCredentialsAvailable } from "./lib/usageClient.js";
 import { CodexClient, defaultCodexHome } from "./lib/codexClient.js";
 import { codexPlanLabel } from "./lib/codexModel.js";
+import { VibeClient, VIBE_COOKIE_KEY, VIBE_ADMIN_URL } from "./lib/vibeClient.js";
+import { vibePlanLabel, vibeAccountName } from "./lib/vibeModel.js";
+import { MuseClient, defaultMuseConfigDir } from "./lib/museClient.js";
+import { SERVICES } from "./lib/services.js";
 import { AUTHORIZE_URL, TOKEN_URL, CLIENT_ID, REDIRECT_URI, OAUTH_SCOPES, DEFAULT_EXPIRES_IN, encoder, decoder } from "./lib/oauth.js";
 import { loadProfiles, saveProfiles, makeProfileId, labelForDirName, ensureProfiles } from "./lib/profiles.js";
 import { getToken, setToken, clearToken } from "./lib/tokenStore.js";
@@ -86,14 +90,10 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
     page.add(elements);
 
     // One indicator per service, each with its own popup.
-    const services = [
-      ["show-claude", "Claude indicator", "Usage of your Claude Code profiles."],
-      ["show-codex", "Codex indicator", "Usage of the ChatGPT account the Codex CLI is signed in to."],
-    ];
-    for (const [key, title, subtitle] of services) {
-      const row = new Adw.SwitchRow({ title, subtitle });
+    for (const service of SERVICES) {
+      const row = new Adw.SwitchRow({ title: `${service.title} indicator`, subtitle: service.subtitle });
       elements.add(row);
-      settings.bind(key, row, "active", Gio.SettingsBindFlags.DEFAULT);
+      settings.bind(service.showKey, row, "active", Gio.SettingsBindFlags.DEFAULT);
     }
 
     const toggles = [
@@ -176,7 +176,7 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
 
     const positionRow = new Adw.ComboRow({
       title: "Panel position",
-      subtitle: "Which section of the top bar the indicators sit in. Codex sits right after Claude.",
+      subtitle: "Which section of the top bar the indicators sit in, side by side in the order listed above.",
       model: positions,
     });
     positionRow.selected = Math.max(0, positionKeys.indexOf(settings.get_string("panel-position")));
@@ -196,8 +196,8 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
     behaviour.add(indexRow);
     settings.bind("panel-index", indexRow, "value", Gio.SettingsBindFlags.DEFAULT);
 
-    behaviour.add(this._buildShortcutRow(settings, window, "toggle-menu", "Shortcut to open the Claude popup"));
-    behaviour.add(this._buildShortcutRow(settings, window, "toggle-codex-menu", "Shortcut to open the Codex popup"));
+    for (const service of SERVICES)
+      behaviour.add(this._buildShortcutRow(settings, window, service.shortcutKey, `Shortcut to open the ${service.title} popup`));
 
     const interval = new Adw.SpinRow({
       title: "Refresh interval",
@@ -228,6 +228,8 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
     await this._addProfilesGroup(page, settings, window);
 
     await this._addCodexGroup(page);
+    this._addVibeGroup(page, settings);
+    await this._addMuseGroup(page);
 
     // Sign-in is no longer a single global group: each profile row carries
     // its own Connect/Disconnect, since every profile signs in to its own
@@ -407,6 +409,92 @@ export default class ClaudeUsagePreferences extends ExtensionPreferences {
     try {
       const { email, plan } = await new CodexClient().readAuth();
       status.label = [email, plan ? codexPlanLabel(plan) : null].filter(Boolean).join(" · ") || "Signed in";
+    } catch {
+      status.label = "Not signed in";
+    }
+  }
+
+  /**
+   * A "Mistral Vibe" group: where to paste the admin.mistral.ai session, and
+   * a status line checking it. The Vibe CLI's API key cannot read the plan
+   * allowances, so the indicator borrows a browser session instead.
+   * @ai-generated
+   */
+  _addVibeGroup(page, settings) {
+    const group = new Adw.PreferencesGroup({
+      title: "Mistral Vibe",
+      description:
+        "The Vibe indicator reads the allowances shown on admin.mistral.ai/subscription, " +
+        "using that site's sign-in. Sign in to admin.mistral.ai in your browser, open the " +
+        "developer tools (F12) \u2192 Storage/Application \u2192 Cookies, and paste the value of " +
+        "the ory_session_\u2026 cookie below. It lasts about three months and is stored in " +
+        "GSettings (dconf) in plain text, like the other sign-ins.",
+    });
+    page.add(group);
+
+    const entry = new Adw.PasswordEntryRow({ title: "Session cookie", show_apply_button: true });
+    entry.set_text(settings.get_string(VIBE_COOKIE_KEY));
+    group.add(entry);
+
+    const status = new Gtk.Label({ valign: Gtk.Align.CENTER, css_classes: ["dim-label"] });
+    const statusRow = new Adw.ActionRow({ title: "Account", subtitle: VIBE_ADMIN_URL });
+    statusRow.add_suffix(status);
+    group.add(statusRow);
+
+    const check = async () => {
+      if (!settings.get_string(VIBE_COOKIE_KEY).trim()) {
+        status.label = "Not connected";
+        status.set_css_classes(["dim-label"]);
+        return;
+      }
+      status.label = "Checking\u2026";
+      try {
+        const session = await new VibeClient({ settings }).fetchSession();
+        status.label = [vibeAccountName(session), vibePlanLabel(session)].filter(Boolean).join(" \u00b7 ");
+        status.set_css_classes(["success"]);
+      } catch (e) {
+        status.label = e.status === 401 ? "Session expired or invalid" : "Could not check";
+        status.set_css_classes(["error"]);
+      }
+    };
+
+    entry.connect("apply", () => {
+      settings.set_string(VIBE_COOKIE_KEY, entry.get_text().trim());
+      check();
+    });
+
+    const clearRow = new Adw.ActionRow({ title: "Disconnect", subtitle: "Forget the stored session." });
+    const clearBtn = new Gtk.Button({ label: "Disconnect", valign: Gtk.Align.CENTER, css_classes: ["destructive-action"] });
+    clearBtn.connect("clicked", () => {
+      settings.set_string(VIBE_COOKIE_KEY, "");
+      entry.set_text("");
+      check();
+    });
+    clearRow.add_suffix(clearBtn);
+    group.add(clearRow);
+
+    check();
+  }
+
+  // A "Muse Code" group reporting which Meta account the Muse indicator uses.
+  // Like Codex, the sign-in belongs to the CLI and is only read.
+  async _addMuseGroup(page) {
+    const group = new Adw.PreferencesGroup({
+      title: "Muse Code",
+      description:
+        "The Muse Code indicator reads the sign-in the Muse Code CLI keeps in " +
+        "$XDG_CONFIG_HOME/muse/auth.json (default ~/.config/muse). To switch " +
+        "accounts, run muse login.",
+    });
+    page.add(group);
+
+    const row = new Adw.ActionRow({ title: "Account", subtitle: defaultMuseConfigDir() });
+    const status = new Gtk.Label({ valign: Gtk.Align.CENTER, css_classes: ["dim-label"] });
+    row.add_suffix(status);
+    group.add(row);
+    try {
+      const { email, name } = await new MuseClient().readAuth();
+      status.label = name || email || "Signed in";
     } catch {
       status.label = "Not signed in";
     }

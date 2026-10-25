@@ -2,8 +2,8 @@
 # Build a releasable extension bundle for upload to extensions.gnome.org.
 #
 # Produces dist/<uuid>.shell-extension.zip containing only the runtime files
-# (metadata.json, extension.js, prefs.js, stylesheet.css, lib/, icons/, and the
-# compiled schema). Development files such as README.md, AGENTS.md, LICENSE, the
+# (metadata.json, extension.js, prefs.js, stylesheet.css, lib/, ui/, icons/, and
+# the compiled schema). Development files such as README.md, AGENTS.md, LICENSE, the
 # tools/ directory, and mockups are intentionally left out of the bundle.
 #
 # Usage:
@@ -78,6 +78,7 @@ mkdir -p "$OUT"
 
 gnome-extensions pack "$SRC" \
     --extra-source=lib \
+    --extra-source=ui \
     --extra-source=icons \
     --schema="$SCHEMA" \
     --out-dir="$OUT" \

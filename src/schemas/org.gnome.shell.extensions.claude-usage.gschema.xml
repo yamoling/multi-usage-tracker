@@ -12,10 +12,28 @@
       <description
             >Add a second indicator to the top bar with the usage limits of the ChatGPT account the Codex CLI is signed in to ($CODEX_HOME/auth.json, default ~/.codex).</description>
     </key>
+    <key name="show-vibe" type="b">
+      <default>false</default>
+      <summary>Show the Mistral Vibe indicator</summary>
+      <description
+            >Add an indicator with the monthly Vibe Code and API allowances of your Mistral plan, read from admin.mistral.ai with the session stored in vibe-session-cookie.</description>
+    </key>
+    <key name="show-muse" type="b">
+      <default>false</default>
+      <summary>Show the Muse Code indicator</summary>
+      <description
+            >Add an indicator with the usage of the Meta account the Muse Code CLI is signed in to ($XDG_CONFIG_HOME/muse/auth.json, default ~/.config/muse).</description>
+    </key>
+    <key name="vibe-session-cookie" type="s">
+      <default>''</default>
+      <summary>admin.mistral.ai session cookie</summary>
+      <description
+            >The ory_session_… cookie of a signed-in admin.mistral.ai browser session (name=value, or just the value), used to read the Vibe allowances. Empty means not connected.</description>
+    </key>
     <key name="show-icon" type="b">
       <default>true</default>
       <summary>Show the service icons</summary>
-      <description>Display the Claude and Codex logos in front of their indicators in the panel.</description>
+      <description>Display each service's logo in front of its indicator in the panel.</description>
     </key>
     <key name="panel-gauge" type="s">
       <choices>
@@ -127,6 +145,16 @@
       <default><![CDATA[[]]]></default>
       <summary>Shortcut to open the Codex usage popup</summary>
       <description>Keyboard shortcut that opens and closes the Codex usage dropdown. Empty means no shortcut is bound.</description>
+    </key>
+    <key name="toggle-vibe-menu" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Shortcut to open the Mistral Vibe usage popup</summary>
+      <description>Keyboard shortcut that opens and closes the Mistral Vibe usage dropdown. Empty means no shortcut is bound.</description>
+    </key>
+    <key name="toggle-muse-menu" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Shortcut to open the Muse Code usage popup</summary>
+      <description>Keyboard shortcut that opens and closes the Muse Code usage dropdown. Empty means no shortcut is bound.</description>
     </key>
     <key name="poll-seconds" type="i">
       <range min="30" max="600" />

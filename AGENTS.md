@@ -1,10 +1,12 @@
 # Multi Usage Tracker (GNOME Shell extension)
 
-Two GNOME Shell panel indicators, Claude and Codex, that show your subscription
-tier and live usage limits (5-hour and 7-day windows). The Codex indicator
-reads the ChatGPT sign-in the Codex CLI keeps in `$CODEX_HOME/auth.json`
-(default `~/.codex`), read-only; everything below about tokens and profiles is
-Claude-specific. It reuses the OAuth token that Claude
+GNOME Shell panel indicators, one per service (Claude, Codex, Mistral Vibe,
+Muse Code), that show your subscription tier and live usage limits. The Codex
+indicator reads the ChatGPT sign-in the Codex CLI keeps in
+`$CODEX_HOME/auth.json` (default `~/.codex`), and the Muse Code one the sign-in
+in `$XDG_CONFIG_HOME/muse/auth.json`, both read-only. Mistral Vibe uses a
+pasted admin.mistral.ai session cookie (see Data sources). Everything below
+about tokens and profiles is Claude-specific. It reuses the OAuth token that Claude
 Code already stores on disk, so there is usually no separate login. Each profile
 can also sign in on its own, from a PKCE flow in its row in prefs, for accounts
 that never use the CLI.
@@ -14,28 +16,59 @@ that never use the CLI.
 The shipped extension lives in `src/`; everything else (this file, the README,
 the LICENSE, `build.sh`, `tools/`) is repo tooling that stays out of the bundle.
 
-- `src/extension.js` — panel indicators + dropdown UI (ESM, GNOME Shell 45+
-  style). `UsageView` is one usage source's panel block and popup section
-  (meters, ring/bar, error and signed-out states); `ProfileView` (one Claude
-  Code profile, its `UsageClient`) and `CodexView` (the Codex account, its
-  `CodexClient`) subclass it. `UsageIndicator` is one panel button with its
-  own popup, poll timer, and countdown; `ClaudeUsageIndicator` owns one
-  `ProfileView` per configured profile and `CodexUsageIndicator` owns one
-  `CodexView`. The extension adds both to the panel (role `<uuid>` and
-  `<uuid>-codex`, Codex right after Claude), each toggled by
-  `show-claude`/`show-codex`. The panel shows a Claude icon once, then one
-  block per profile (ring/bar, percentage, reset countdown, tier label), each
-  independently toggleable via GSettings (the toggles apply to every profile
-  uniformly). A small chip (e.g. "TE") tags each panel block only when more
+Each service is three layers, so adding one touches a known set of files:
+
+| Layer          | Pure?      | Claude                   | Codex                   | Mistral Vibe           | Muse Code              |
+| -------------- | ---------- | ------------------------ | ----------------------- | ---------------------- | ---------------------- |
+| client (fetch) | GI only    | `lib/usageClient.js`     | `lib/codexClient.js`    | `lib/vibeClient.js`    | `lib/museClient.js`    |
+| model (shape)  | no imports | `lib/usageModel.js`      | `lib/codexModel.js`     | `lib/vibeModel.js`     | `lib/museModel.js`     |
+| view (render)  | shell      | `ui/views/claudeView.js` | `ui/views/codexView.js` | `ui/views/vibeView.js` | `ui/views/museView.js` |
+
+To add a service: write the three files, add an entry to `lib/services.js`
+and to `INDICATORS` in `extension.js`, add the `show-<id>` and
+`toggle-<id>-menu` schema keys, an icon, and a `cu-pill-<id>` style; prefs
+picks the switch and shortcut rows up from `SERVICES`.
+
+- `src/extension.js` — entry point only: creates/destroys one indicator per
+  enabled service (`SERVICES` order, panel role `<uuid>` for Claude and
+  `<uuid>-<id>` for the others), places them side by side, and binds each
+  service's popup shortcut.
+- `src/lib/services.js` — the service registry (id, title, `show-*` and
+  shortcut keys, usage page URL), shared by the extension and prefs.
+- `src/ui/indicator.js` — `UsageIndicator`, one panel button with its own
+  popup, poll timer, and countdown, showing one or more views. Views are built
+  by a `buildViews` callback; `watchKeys` lists settings whose change forces a
+  refetch. Replacing the views cancels any refresh still in flight for the old
+  ones (`_viewsCancellable`).
+- `src/ui/claudeIndicator.js` — `ClaudeUsageIndicator`, one `ProfileView` per
+  configured Claude Code profile, rebuilt when `profiles` changes.
+- `src/ui/usageView.js` — `UsageView`, one usage source's panel block and popup
+  section (meters, ring/bar, error and signed-out states). Failure wording is
+  configuration (`messages: {expired, forbidden, rateLimited, unreachable}`),
+  not an override. The panel shows the service icon once, then one block per
+  view (ring/bar, percentage, reset countdown, tier label), each toggleable via
+  GSettings. A small chip (e.g. "TE") tags each Claude block only when more
   than one profile is configured.
+- `src/ui/widgets.js` — `Meter`, `Ring`, `PanelBar` (each with a `destroy()`
+  following the teardown rules below).
+- `src/lib/format.js` — pure severity/projection/countdown helpers.
+- `src/lib/windows.js` — the normalised window shape every model produces
+  (roles `session`/`weekly`/`monthly`/`scoped`/`other`), and timestamp/percent
+  helpers.
+- `src/lib/errors.js` — `UsageError`, `SignedOutError` (re-exported by
+  `usageClient.js` for older importers). `src/lib/http.js` — `requestJson()`
+  over libsoup and async `loadJsonFile()`, used by every client.
 - `src/prefs.js` — Adwaita preferences (element toggles, panel window, refresh
   interval, the "Claude profiles" list), bound to GSettings. Each profile row
   carries its own PKCE sign-in (`_addSignInRows`): a status line that reads
   "Using Claude Code", "Connected", or "Not connected", plus Connect, a field
   for the pasted code, and Disconnect.
 - `src/schemas/` — GSettings schema (`org.gnome.shell.extensions.claude-usage`).
-  Keys: `show-claude`/`show-codex` (bool, one indicator each),
-  `show-icon`/`show-percentage`/`show-tier`/`show-reset` (bool, apply to both),
+  Keys: `show-claude`/`show-codex`/`show-vibe`/`show-muse` (bool, one
+  indicator each; Vibe and Muse default off),
+  `vibe-session-cookie` (string, the pasted admin.mistral.ai session),
+  `toggle-vibe-menu`/`toggle-muse-menu` (`as`, popup shortcuts),
+  `show-icon`/`show-percentage`/`show-tier`/`show-reset` (bool, apply to all),
   `panel-gauge` (`ring`|`bar`|`none`),
   `panel-window` (`five-hour`|`seven-day`|`max`|`worst`), `poll-seconds` (30-600),
   `panel-position` (`left`|`center`|`right`) + `panel-index` (0-20, where the
@@ -104,6 +137,13 @@ the LICENSE, `build.sh`, `tools/`) is repo tooling that stays out of the bundle.
   colours are shared), plus plan label, credits, and banked resets. Tested by
   `node tools/test-codexModel.mjs`; `gjs -m tools/poll-codex.js [--raw]` checks
   the live API (`--raw` dumps the payload with identifiers redacted).
+- `src/lib/vibeClient.js` / `src/lib/vibeModel.js` — Mistral Vibe (see Data
+  sources). Tested by `node tools/test-vibeModel.mjs`; `gjs -m
+tools/poll-vibe.js [cookie-file]` checks the live site.
+- `src/lib/museClient.js` / `src/lib/museModel.js` — Muse Code (see Data
+  sources). Tested by `node tools/test-museModel.mjs`; `gjs -m
+tools/poll-muse.js [--raw]` checks the live API (`--raw` prints only
+  `subs_usage`, never the record, which contains an API key).
 - `src/stylesheet.css` — `cu-*` classes for the indicator and popup.
 - `src/icons/` — panel icon (`claude-spark.svg`) and popup logo
   (`octopus.png`); `codex.png` is the Codex icon for both.
@@ -140,6 +180,28 @@ the LICENSE, `build.sh`, `tools/`) is repo tooling that stays out of the bundle.
   `anthropic-version: 2023-06-01`.
 - Refresh: `POST https://platform.claude.com/v1/oauth/token` with
   `grant_type=refresh_token` and the public Claude Code `client_id`.
+
+- Mistral Vibe: the CLI's own credential (a Mistral API key in the keyring)
+  only reaches `GET console.mistral.ai/api/vibe/whoami` (plan, no usage). The
+  allowances come from admin.mistral.ai's tRPC routes, authenticated with the
+  site's Ory browser session cookie (`ory_session_…`, ~3-month lifetime):
+  `GET admin.mistral.ai/api/local-trpc/billing.budget?input=<superjson null>`
+  returns `{result: {data: {json: {api_budget, vibe_budget}}}}`, each budget
+  `{usage_percentage, initial_budget, currency, reset_at}` (reset on the 1st
+  of the month); `user.meSession` gives the name and
+  `organization.active_chat_plan`. A bad session gets HTTP 200 with an Ory
+  login-flow object instead of a tRPC result, which the client maps to 401.
+  An API key, with or without the session, is rejected.
+- Muse Code: `POST api.meta.ai/muse-code/key` with body `{"onboard": false}`,
+  headers `Authorization: Bearer <access_token from auth.json>` and
+  `x-api-version: 1.0.0` (what `muse usage` sends). The response carries
+  `is_subs_active`, `subs_tier_name`, `user_full_name`, an API key (never log
+  it), and `subs_usage`, which is `null` until the first request of a window.
+  Its shape (`window: {used_percent, window_duration_mins, resets_at}`,
+  `weekly: {used_percent, resets_at}`) comes from strings in the CLI binary
+  and has not yet been seen live, so `museModel.js` is lenient about spelling
+  and timestamp units. A blocked request answers 429 with `resets_at` (epoch
+  s).
 
 These are undocumented internal endpoints and may change without notice.
 

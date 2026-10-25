@@ -3,4 +3,4 @@ mockup.png
 node_modules/
 src/schemas/gschemas.compiled
 dist/
-.agents/
+.agents/*

@@ -22,6 +22,8 @@ See [install](#install) instructions
 
 - **Claude and Codex, side by side.** Two indicators in the top bar, each with its own popup: one for your Claude Code profiles, one for the ChatGPT account the Codex CLI is signed in to (`~/.codex/auth.json`, or `$CODEX_HOME`). The Codex popup shows the 5-hour and weekly windows, any per-model limits, your plan, credit balance, and banked rate-limit resets. Either indicator can be switched off in preferences. The Codex token is only read, never refreshed: if it lapses, run `codex` once.
 
+- **Mistral Vibe and Muse Code too (opt-in).** Two more indicators, off by default and enabled in preferences. _Mistral Vibe_ shows the monthly Vibe Code and API allowances from [admin.mistral.ai/subscription](https://admin.mistral.ai/subscription) as a percentage and in money ("Vibe Code: €126.61 of €127.50"). _Muse Code_ shows the usage windows of the Meta account the `muse` CLI is signed in to (`~/.config/muse/auth.json`). See [Authentication](#authentication) for what each needs.
+
 - **Panel indicator** with a Claude icon, a usage gauge (a circular ring or a horizontal bar, your choice, or none), a percentage, an optional time-until-reset countdown, and a subscription tier label. Each element can be toggled independently.
 - **Multiple profiles.** If you run more than one Claude Code account on this machine (via `CLAUDE_CONFIG_DIR`, e.g. `~/.claude` and `~/.claude-work`), the extension shows every configured profile side by side in the panel and the dropdown, and refreshes them all together. Profiles are auto-detected on first run; add, rename, repoint, or remove them from the "Claude profiles" group in preferences.
 - **Dropdown** with per-window meters: the 5-hour window, the 7-day window, and any per-model 7-day windows the API reports (for example Opus and Sonnet), discovered automatically.
@@ -92,6 +94,10 @@ The extension **never asks for your password**. It uses an OAuth token in one of
 
 1. **Claude Code (preferred).** If `~/.claude/.credentials.json` contains a valid token, the extension uses it directly. When the token is close to expiry it is refreshed automatically with the stored refresh token and written back to the same file, so it stays valid whether or not Claude Code itself is running. Because the credentials are shared, you stay signed in to both. If those credentials have fully expired (for example you only use Claude Desktop and never sign in to the Claude Code CLI), the extension falls back to the in-app sign-in below.
 2. **In-app sign-in (fallback).** Every profile has its own **Connect** button in its row under "Claude profiles", so each profile can sign in to its own Claude account without the CLI. It runs a standard PKCE OAuth flow: Connect opens your browser, you authorize, and paste the resulting code back into the preferences window. Tokens are stored per profile in GSettings and refreshed automatically before they expire. A profile that is already signed in through Claude Code says so and needs nothing here.
+
+**Codex** and **Muse Code** reuse their CLI's sign-in read-only (`codex login`, `muse login`). Muse Code reports no usage snapshot until the first request of a window; the popup says so instead of showing a gauge.
+
+**Mistral Vibe** is different: the Vibe CLI's API key cannot read the plan allowances, so the indicator uses your admin.mistral.ai browser session. Sign in to admin.mistral.ai, open the developer tools (F12) → Storage (Firefox) or Application (Chrome) → Cookies, copy the value of the `ory_session_…` cookie, and paste it under "Mistral Vibe" in the preferences. The session lasts about three months; when it expires the popup asks for a new one. It is stored in GSettings in plain text, like the Claude tokens.
 
 ## Development
 

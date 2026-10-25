@@ -92,6 +92,18 @@
     background-color: #4842a8;
     border: 1px solid #4842a8;
 }
+/* Mistral Vibe plan pill: Mistral's orange-red. */
+.cu-pill-vibe {
+    color: #ffffff;
+    background-color: #c94a0c;
+    border: 1px solid #c94a0c;
+}
+/* Muse Code plan pill: Meta blue. */
+.cu-pill-muse {
+    color: #ffffff;
+    background-color: #0064e0;
+    border: 1px solid #0064e0;
+}
 
 .cu-section {
     font-size: 8pt;

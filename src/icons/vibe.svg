@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 70 50" width="70" height="50">
+  <!-- Pixel-block "M" in Mistral's yellow-to-red bands (a simplified mark, not the official logo). -->
+  <g shape-rendering="crispEdges">
+    <rect x="0" y="0" width="10" height="10" fill="#ffd800"/>
+    <rect x="60" y="0" width="10" height="10" fill="#ffd800"/>
+    <rect x="0" y="10" width="20" height="10" fill="#ffaf00"/>
+    <rect x="50" y="10" width="20" height="10" fill="#ffaf00"/>
+    <rect x="0" y="20" width="70" height="10" fill="#ff8205"/>
+    <rect x="0" y="30" width="10" height="10" fill="#fa500f"/>
+    <rect x="30" y="30" width="10" height="10" fill="#fa500f"/>
+    <rect x="60" y="30" width="10" height="10" fill="#fa500f"/>
+    <rect x="0" y="40" width="10" height="10" fill="#e10500"/>
+    <rect x="60" y="40" width="10" height="10" fill="#e10500"/>
+  </g>
+</svg>
