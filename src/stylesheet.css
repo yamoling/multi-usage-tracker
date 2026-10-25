@@ -1,0 +1,230 @@
+/* ===== panel button ===== */
+.cu-panel {
+    spacing: 5px;
+    padding: 0 4px;
+}
+.cu-panel-icon {
+    icon-size: 16px;
+}
+.cu-ring {
+    width: 18px;
+    height: 18px;
+}
+.cu-panel-bar {
+    width: 34px;
+    height: 10px;
+    border-radius: 99px;
+    background-color: rgba(128, 128, 128, 0.3);
+}
+.cu-panel-bar-fill {
+    height: 10px;
+    border-radius: 99px;
+    background-color: #3584e4;
+}
+/* Gauge fills share the blue-to-red pace gradient from lib/usagePace.js.
+   The blue above is only a fallback. */
+.cu-panel-pct {
+    font-weight: bold;
+    font-feature-settings: "tnum";
+}
+.cu-panel-pct.cu-warn {
+    color: #ffa348;
+}
+.cu-panel-pct.cu-crit {
+    color: #ff6b6b;
+}
+.cu-panel-reset {
+    font-size: 9pt;
+    color: rgba(128, 128, 128, 1);
+    font-feature-settings: "tnum";
+}
+.cu-panel-tier {
+    font-size: 9pt;
+    font-weight: bold;
+}
+.cu-panel-block {
+    spacing: 5px;
+}
+.cu-panel-sep {
+    width: 1px;
+    height: 14px;
+    margin: 0 6px;
+    background-color: rgba(128, 128, 128, 0.35);
+}
+.cu-panel-chip {
+    font-size: 8pt;
+    font-weight: bold;
+    color: rgba(128, 128, 128, 1);
+    padding: 1px 4px;
+    border-radius: 4px;
+    background-color: rgba(128, 128, 128, 0.18);
+}
+
+/* ===== popup ===== */
+.cu-popup {
+    width: 320px;
+    spacing: 0;
+}
+
+.cu-logo {
+    icon-size: 36px;
+}
+.cu-title {
+    font-weight: bold;
+    font-size: 12pt;
+}
+.cu-subtitle {
+    font-size: 9pt;
+    color: rgba(128, 128, 128, 1);
+}
+.cu-pill {
+    font-size: 9pt;
+    font-weight: bold;
+    padding: 3px 9px;
+    border-radius: 999px;
+    color: #ffffff;
+    background-color: #9a4316;
+    border: 1px solid #9a4316;
+}
+/* Codex plan pill: the logo's indigo instead of Claude's orange. */
+.cu-pill-codex {
+    color: #ffffff;
+    background-color: #4842a8;
+    border: 1px solid #4842a8;
+}
+
+.cu-section {
+    font-size: 8pt;
+    font-weight: bold;
+    color: rgba(128, 128, 128, 1);
+    margin: 10px 0 8px 0;
+}
+
+/* ===== per-profile sections ===== */
+.cu-profile-section {
+    margin-bottom: 2px;
+}
+.cu-profile-section-divider {
+    border-top: 1px solid rgba(128, 128, 128, 0.25);
+    padding-top: 12px;
+    margin-top: 10px;
+}
+.cu-profile-header {
+    spacing: 11px;
+    padding-bottom: 12px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+}
+
+/* ===== meters ===== */
+.cu-meter {
+    spacing: 5px;
+    margin-bottom: 11px;
+}
+.cu-meter-row {
+    spacing: 8px;
+}
+.cu-meter-name {
+    font-size: 11pt;
+}
+.cu-meter-pct {
+    font-weight: bold;
+    font-feature-settings: "tnum";
+}
+/* The track is only a container; .cu-bar draws the track, fill, and clock-mark
+   dent itself (UsageBar in extension.js). */
+.cu-track {
+    width: 300px;
+    height: 7px;
+}
+.cu-bar {
+    height: 7px;
+}
+.cu-mark-label {
+    font-size: 7pt;
+    color: rgba(128, 128, 128, 0.8);
+    font-feature-settings: "tnum";
+}
+.cu-schedule-marker {
+    width: 2px;
+    height: 11px;
+    background-color: #000000;
+    border-radius: 1px;
+}
+.cu-caption {
+    font-size: 9pt;
+    color: rgba(128, 128, 128, 1);
+}
+
+.cu-extra {
+    font-size: 9.5pt;
+    color: rgba(128, 128, 128, 1);
+    margin: 2px 0 4px 0;
+}
+.cu-extra.cu-warn {
+    color: #ffa348;
+}
+.cu-extra.cu-crit {
+    color: #ff6b6b;
+}
+.cu-error {
+    font-size: 9.5pt;
+    color: #ff9c8a;
+    margin: 4px 0;
+}
+/* Signed-out note: same slot as an error, but muted — it's a state, not a fault. */
+.cu-error.cu-dim {
+    color: rgba(128, 128, 128, 1);
+}
+
+/* ===== actions ===== */
+.cu-actions {
+    spacing: 8px;
+    margin-top: 10px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(128, 128, 128, 0.25);
+}
+.cu-btn {
+    padding: 8px 10px;
+    border-radius: 9px;
+    text-align: center;
+    font-weight: bold;
+    font-size: 10pt;
+    background-color: rgba(128, 128, 128, 0.18);
+    border: 1px solid rgba(128, 128, 128, 0.25);
+}
+.cu-btn:hover {
+    background-color: rgba(128, 128, 128, 0.3);
+}
+.cu-btn-pri {
+    background-color: #3584e4;
+    border: 1px solid transparent;
+    color: #ffffff;
+}
+.cu-btn-pri:hover {
+    background-color: #4a90e0;
+}
+
+/* ===== footer ===== */
+.cu-footer {
+    spacing: 8px;
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px solid rgba(128, 128, 128, 0.25);
+}
+.cu-updated {
+    font-size: 9pt;
+    color: rgba(128, 128, 128, 1);
+    margin-top: 6px;
+}
+.cu-refresh {
+    font-size: 9pt;
+    font-weight: bold;
+    color: #62a0ea;
+    padding: 4px 6px;
+    border-radius: 6px;
+    text-align: center;
+}
+.cu-refresh:hover {
+    background-color: rgba(128, 128, 128, 0.2);
+}

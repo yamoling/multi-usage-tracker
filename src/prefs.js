@@ -1,0 +1,753 @@
+import Adw from "gi://Adw";
+import Gtk from "gi://Gtk";
+import Gdk from "gi://Gdk";
+import Gio from "gi://Gio";
+import GLib from "gi://GLib";
+import Soup from "gi://Soup";
+
+import { ExtensionPreferences } from "resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js";
+
+import { claudeCodeCredentialsAvailable } from "./lib/usageClient.js";
+import { CodexClient, defaultCodexHome } from "./lib/codexClient.js";
+import { codexPlanLabel } from "./lib/codexModel.js";
+import { AUTHORIZE_URL, TOKEN_URL, CLIENT_ID, REDIRECT_URI, OAUTH_SCOPES, DEFAULT_EXPIRES_IN, encoder, decoder } from "./lib/oauth.js";
+import { loadProfiles, saveProfiles, makeProfileId, labelForDirName, ensureProfiles } from "./lib/profiles.js";
+import { getToken, setToken, clearToken } from "./lib/tokenStore.js";
+import { PACE_THRESHOLD_KEYS } from "./lib/usagePace.js";
+import { buildPaceScale } from "./lib/paceScale.js";
+
+const KOFI_URL = "https://ko-fi.com/dvdstelt";
+
+// Keys that type nothing, so binding them without a modifier steals no input:
+// the function keys (F1-F35, contiguous) and the XF86 media/extra keys, which
+// all sit above 0x1008FF00.
+const XF86_KEY_BASE = 0x1008ff00;
+function isDedicatedKey(keyval) {
+  return (keyval >= Gdk.KEY_F1 && keyval <= Gdk.KEY_F35) || keyval >= XF86_KEY_BASE;
+}
+
+// Gtk.FileDialog predates GJS's automatic async/finish pairing for this
+// class on some GNOME versions, so promisify it explicitly.
+Gio._promisify(Gtk.FileDialog.prototype, "select_folder", "select_folder_finish");
+
+// URL-safe base64 without padding, as required by PKCE.
+function base64url(bytes) {
+  return GLib.base64_encode(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+function randomToken() {
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) bytes[i] = GLib.random_int_range(0, 256);
+  return base64url(bytes);
+}
+
+function codeChallenge(verifier) {
+  const hex = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA256, verifier, -1);
+  const raw = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) raw[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return base64url(raw);
+}
+
+// Opens a native folder picker rooted at initialPath; returns the chosen path,
+// or null if the user cancelled (or the dialog failed for any reason - not
+// worth surfacing, the user can just try again).
+async function pickFolder(window, initialPath) {
+  const dialog = new Gtk.FileDialog({ title: "Select a Claude Code config folder" });
+  if (initialPath) {
+    try {
+      dialog.set_initial_folder(Gio.File.new_for_path(initialPath));
+    } catch {
+      // Best-effort; the dialog falls back to its own default location.
+    }
+  }
+  try {
+    const folder = await dialog.select_folder(window, null);
+    return folder.get_path();
+  } catch {
+    return null;
+  }
+}
+
+export default class ClaudeUsagePreferences extends ExtensionPreferences {
+  async fillPreferencesWindow(window) {
+    const settings = this.getSettings();
+
+    const page = new Adw.PreferencesPage({
+      title: "Panel",
+      icon_name: "preferences-system-symbolic",
+    });
+    window.add(page);
+
+    // ---- which elements appear in the panel ----
+    const elements = new Adw.PreferencesGroup({
+      title: "Panel elements",
+      description: "Choose what to show in the top bar.",
+    });
+    page.add(elements);
+
+    // One indicator per service, each with its own popup.
+    const services = [
+      ["show-claude", "Claude indicator", "Usage of your Claude Code profiles."],
+      ["show-codex", "Codex indicator", "Usage of the ChatGPT account the Codex CLI is signed in to."],
+    ];
+    for (const [key, title, subtitle] of services) {
+      const row = new Adw.SwitchRow({ title, subtitle });
+      elements.add(row);
+      settings.bind(key, row, "active", Gio.SettingsBindFlags.DEFAULT);
+    }
+
+    const toggles = [
+      ["show-icon", "Service icons"],
+      ["show-percentage", "Usage percentage"],
+      ["show-tier", "Subscription tier"],
+    ];
+    for (const [key, title] of toggles) {
+      const row = new Adw.SwitchRow({ title });
+      elements.add(row);
+      settings.bind(key, row, "active", Gio.SettingsBindFlags.DEFAULT);
+    }
+
+    // Only has any effect with more than one profile configured.
+    const chipRow = new Adw.SwitchRow({
+      title: "Profile tag",
+      subtitle: 'Show a short tag (e.g. "DW") before each profile\'s gauge, when you have more than one profile.',
+    });
+    elements.add(chipRow);
+    settings.bind("show-profile-chip", chipRow, "active", Gio.SettingsBindFlags.DEFAULT);
+
+    // Time-until-reset for the window chosen by "Panel reflects" below.
+    const resetRow = new Adw.SwitchRow({
+      title: "Time until reset",
+      subtitle: 'Show the time left before the window selected under "Panel reflects" resets.',
+    });
+    elements.add(resetRow);
+    settings.bind("show-reset", resetRow, "active", Gio.SettingsBindFlags.DEFAULT);
+
+    const gauges = new Gtk.StringList();
+    gauges.append("Circle");
+    gauges.append("Bar");
+    gauges.append("None");
+    const gaugeKeys = ["ring", "bar", "none"];
+
+    const gaugeRow = new Adw.ComboRow({
+      title: "Usage gauge",
+      subtitle: "Show a circular ring, a horizontal bar, or no gauge.",
+      model: gauges,
+    });
+    gaugeRow.selected = Math.max(0, gaugeKeys.indexOf(settings.get_string("panel-gauge")));
+    gaugeRow.connect("notify::selected", () => {
+      settings.set_string("panel-gauge", gaugeKeys[gaugeRow.selected]);
+    });
+    settings.connect("changed::panel-gauge", () => {
+      gaugeRow.selected = Math.max(0, gaugeKeys.indexOf(settings.get_string("panel-gauge")));
+    });
+    elements.add(gaugeRow);
+
+    // ---- behaviour ----
+    const behaviour = new Adw.PreferencesGroup({ title: "Behaviour" });
+    page.add(behaviour);
+
+    const windows = new Gtk.StringList();
+    windows.append("5-hour window");
+    windows.append("7-day window");
+    windows.append("Most constrained");
+    windows.append("Worst active limit");
+    const windowKeys = ["five-hour", "seven-day", "max", "worst"];
+
+    const windowRow = new Adw.ComboRow({
+      title: "Panel reflects",
+      subtitle: "Which usage window the ring and percentage show.",
+      model: windows,
+    });
+    windowRow.selected = Math.max(0, windowKeys.indexOf(settings.get_string("panel-window")));
+    windowRow.connect("notify::selected", () => {
+      settings.set_string("panel-window", windowKeys[windowRow.selected]);
+    });
+    settings.connect("changed::panel-window", () => {
+      windowRow.selected = Math.max(0, windowKeys.indexOf(settings.get_string("panel-window")));
+    });
+    behaviour.add(windowRow);
+
+    const positions = new Gtk.StringList();
+    positions.append("Left");
+    positions.append("Center");
+    positions.append("Right");
+    const positionKeys = ["left", "center", "right"];
+
+    const positionRow = new Adw.ComboRow({
+      title: "Panel position",
+      subtitle: "Which section of the top bar the indicators sit in. Codex sits right after Claude.",
+      model: positions,
+    });
+    positionRow.selected = Math.max(0, positionKeys.indexOf(settings.get_string("panel-position")));
+    positionRow.connect("notify::selected", () => {
+      settings.set_string("panel-position", positionKeys[positionRow.selected]);
+    });
+    settings.connect("changed::panel-position", () => {
+      positionRow.selected = Math.max(0, positionKeys.indexOf(settings.get_string("panel-position")));
+    });
+    behaviour.add(positionRow);
+
+    const indexRow = new Adw.SpinRow({
+      title: "Position in that section",
+      subtitle: "Raise this to move the indicators further along; 0 puts them first.",
+      adjustment: new Gtk.Adjustment({ lower: 0, upper: 20, step_increment: 1, page_increment: 5 }),
+    });
+    behaviour.add(indexRow);
+    settings.bind("panel-index", indexRow, "value", Gio.SettingsBindFlags.DEFAULT);
+
+    behaviour.add(this._buildShortcutRow(settings, window, "toggle-menu", "Shortcut to open the Claude popup"));
+    behaviour.add(this._buildShortcutRow(settings, window, "toggle-codex-menu", "Shortcut to open the Codex popup"));
+
+    const interval = new Adw.SpinRow({
+      title: "Refresh interval",
+      subtitle: "Seconds between usage updates.",
+      adjustment: new Gtk.Adjustment({
+        lower: 30,
+        upper: 600,
+        step_increment: 10,
+        page_increment: 60,
+      }),
+    });
+    behaviour.add(interval);
+    settings.bind("poll-seconds", interval, "value", Gio.SettingsBindFlags.DEFAULT);
+
+    // ---- clock mark on the dropdown's usage bars ----
+    const bars = new Adw.PreferencesGroup({ title: "Dropdown bars" });
+    page.add(bars);
+    const markRow = new Adw.SwitchRow({
+      title: "Next 8:00 / 18:00 mark",
+      subtitle: "Cut a small labelled dent into each bar at the next 08:00 or 18:00, if the window has not reset by then.",
+    });
+    bars.add(markRow);
+    settings.bind("show-clock-mark", markRow, "active", Gio.SettingsBindFlags.DEFAULT);
+
+    this._addColourThresholdsGroup(page, settings);
+
+    // ---- profiles (one per Claude Code account / config directory) ----
+    await this._addProfilesGroup(page, settings, window);
+
+    await this._addCodexGroup(page);
+
+    // Sign-in is no longer a single global group: each profile row carries
+    // its own Connect/Disconnect, since every profile signs in to its own
+    // Claude account.
+    this._addAboutGroup(page);
+  }
+
+  /**
+   * Adds the "Gauge colours" group: a gradient scale with one draggable
+   * cursor per pace threshold (usage as a percentage of the evenly spread
+   * budget) where a colour is reached in full, plus a button restoring the
+   * defaults.
+   * @ai-generated
+   */
+  _addColourThresholdsGroup(page, settings) {
+    const group = new Adw.PreferencesGroup({
+      title: "Gauge colours",
+      description:
+        "Gauges are coloured by pace: usage compared with an even spread over the window (100% = exactly on schedule). " +
+        "Drag a cursor to set the pace at which its colour is reached in full; colours blend in between. " +
+        "With the scale focused, Left/Right nudge a cursor (Shift: by 10) and Up/Down switch cursor. " +
+        "A window at 100% usage is always red.",
+    });
+    page.add(group);
+
+    const scale = buildPaceScale(settings);
+    scale.set_margin_top(10);
+    scale.set_margin_bottom(8);
+    scale.set_margin_start(6);
+    scale.set_margin_end(6);
+    group.add(new Adw.PreferencesRow({ activatable: false, child: scale }));
+
+    const resetRow = new Adw.ActionRow({ title: "Restore default thresholds" });
+    const resetBtn = new Gtk.Button({ label: "Reset", valign: Gtk.Align.CENTER });
+    resetBtn.connect("clicked", () => {
+      for (const key of Object.values(PACE_THRESHOLD_KEYS)) settings.reset(key);
+    });
+    resetRow.add_suffix(resetBtn);
+    group.add(resetRow);
+  }
+
+  // Adds a "Claude profiles" group: one expandable row per configured
+  // profile (name, config folder, its own sign-in, and — only when another
+  // profile would remain — remove), plus an "Add profile" row. Each
+  // profile is just a Claude Code config directory (the CLAUDE_CONFIG_DIR
+  // convention for running multiple accounts on one machine); the extension
+  // shows every configured profile side by side and refreshes them together.
+  async _addProfilesGroup(page, settings, window) {
+    const group = new Adw.PreferencesGroup({
+      title: "Claude profiles",
+      description:
+        "One row per Claude Code account. A profile is a config " +
+        "directory such as ~/.claude or ~/.claude-work (the one you get by " +
+        "running CLAUDE_CONFIG_DIR=~/.claude-work claude). Add one for each " +
+        "account you want visible - and refreshed - at the same time.",
+    });
+    page.add(group);
+
+    let rows = [];
+    const rerender = () => {
+      for (const row of rows) group.remove(row);
+      // Profile rows first, "Add profile" always last. Removal is only
+      // offered when another profile would remain: with a single profile
+      // there is nothing to fall back to, and deleting it by accident
+      // leaves an empty panel that is fiddly to recover from.
+      const profiles = loadProfiles(settings);
+      rows = profiles.map((p) => buildProfileRow(p, profiles.length > 1));
+      rows.push(buildAddRow());
+    };
+
+    const persist = (profiles) => {
+      saveProfiles(settings, profiles);
+      rerender();
+    };
+
+    const buildProfileRow = (profile, canRemove) => {
+      const row = new Adw.ExpanderRow({ title: profile.label, subtitle: profile.configDir });
+      group.add(row);
+
+      const nameRow = new Adw.EntryRow({ title: "Name", text: profile.label, show_apply_button: true });
+      nameRow.connect("apply", () => {
+        const profiles = loadProfiles(settings);
+        const p = profiles.find((x) => x.id === profile.id);
+        if (p) {
+          p.label = nameRow.get_text().trim() || p.label;
+          persist(profiles);
+        }
+      });
+      row.add_row(nameRow);
+
+      const folderRow = new Adw.ActionRow({ title: "Config folder", subtitle: profile.configDir });
+      const changeBtn = new Gtk.Button({ label: "Change…", valign: Gtk.Align.CENTER });
+      changeBtn.connect("clicked", async () => {
+        const dir = await pickFolder(window, profile.configDir);
+        if (!dir) return;
+        const profiles = loadProfiles(settings);
+        const p = profiles.find((x) => x.id === profile.id);
+        if (p) {
+          p.configDir = dir;
+          persist(profiles);
+        }
+      });
+      folderRow.add_suffix(changeBtn);
+      row.add_row(folderRow);
+
+      this._addSignInRows(row, settings, profile);
+
+      if (!canRemove) return row;
+
+      const removeRow = new Adw.ActionRow({ title: "Remove this profile" });
+      const removeBtn = new Gtk.Button({
+        label: "Remove",
+        valign: Gtk.Align.CENTER,
+        css_classes: ["destructive-action"],
+      });
+      removeBtn.connect("clicked", () => {
+        // Drop the profile's stored sign-in too, so a removed account's
+        // tokens don't linger in settings.
+        clearToken(settings, profile.id);
+        Gio.Settings.sync();
+        persist(loadProfiles(settings).filter((x) => x.id !== profile.id));
+      });
+      removeRow.add_suffix(removeBtn);
+      row.add_row(removeRow);
+
+      return row;
+    };
+
+    const buildAddRow = () => {
+      const row = new Adw.ActionRow({
+        title: "Add profile",
+        subtitle: "Point at another Claude Code config directory",
+      });
+      const addBtn = new Gtk.Button({
+        label: "Add…",
+        valign: Gtk.Align.CENTER,
+        css_classes: ["suggested-action"],
+      });
+      addBtn.connect("clicked", async () => {
+        const dir = await pickFolder(window, GLib.get_home_dir());
+        if (!dir) return;
+        const profiles = loadProfiles(settings);
+        if (profiles.some((p) => p.configDir === dir)) return;
+        profiles.push({
+          id: makeProfileId(),
+          label: labelForDirName(GLib.path_get_basename(dir)),
+          configDir: dir,
+        });
+        persist(profiles);
+      });
+      row.add_suffix(addBtn);
+      group.add(row);
+      return row;
+    };
+
+    await ensureProfiles(settings);
+    rerender();
+  }
+
+  // A "Codex" group reporting which ChatGPT account the Codex indicator uses.
+  // There is no sign-in here: the token belongs to the Codex CLI, which also
+  // keeps it fresh, so the extension only ever reads it.
+  async _addCodexGroup(page) {
+    const group = new Adw.PreferencesGroup({
+      title: "Codex",
+      description:
+        "The Codex indicator reads the ChatGPT sign-in the Codex CLI " +
+        "keeps in $CODEX_HOME/auth.json (default ~/.codex). To switch " +
+        "accounts, run codex login.",
+    });
+    page.add(group);
+
+    const row = new Adw.ActionRow({ title: "Account", subtitle: defaultCodexHome() });
+    const status = new Gtk.Label({ valign: Gtk.Align.CENTER, css_classes: ["dim-label"] });
+    row.add_suffix(status);
+    group.add(row);
+    try {
+      const { email, plan } = await new CodexClient().readAuth();
+      status.label = [email, plan ? codexPlanLabel(plan) : null].filter(Boolean).join(" · ") || "Signed in";
+    } catch {
+      status.label = "Not signed in";
+    }
+  }
+
+  // A row showing the current shortcut for opening the popup, which opens a
+  // small capture dialog when activated. The key is an "as" array, matching
+  // how the shell stores its own keybindings.
+  _buildShortcutRow(settings, window, key, title) {
+    const row = new Adw.ActionRow({
+      title,
+      subtitle:
+        "Opens and closes the usage dropdown without the mouse. Needs a modifier, unless it is a function or media key. Not set by default.",
+      activatable: true,
+    });
+
+    const label = new Gtk.ShortcutLabel({
+      disabled_text: "Not set",
+      valign: Gtk.Align.CENTER,
+    });
+    const syncLabel = () => {
+      label.set_accelerator(settings.get_strv(key)[0] ?? "");
+    };
+    syncLabel();
+    settings.connect(`changed::${key}`, syncLabel);
+    row.add_suffix(label);
+
+    const clear = new Gtk.Button({
+      icon_name: "edit-clear-symbolic",
+      valign: Gtk.Align.CENTER,
+      css_classes: ["flat"],
+      tooltip_text: "Clear the shortcut",
+    });
+    clear.connect("clicked", () => settings.set_strv(key, []));
+    row.add_suffix(clear);
+
+    row.connect("activated", () => this._captureShortcut(settings, window, key));
+    return row;
+  }
+
+  // Modal that grabs the next key combination. Escape cancels, Backspace
+  // clears, and a bare key without modifiers is ignored — otherwise typing a
+  // letter would steal it system-wide.
+  _captureShortcut(settings, window, key) {
+    const dialog = new Adw.Window({
+      modal: true,
+      transient_for: window,
+      default_width: 380,
+      default_height: 180,
+      title: "Set shortcut",
+    });
+
+    const view = new Adw.ToolbarView();
+    view.add_top_bar(new Adw.HeaderBar({ show_end_title_buttons: false, show_start_title_buttons: false }));
+    const box = new Gtk.Box({
+      orientation: Gtk.Orientation.VERTICAL,
+      valign: Gtk.Align.CENTER,
+      spacing: 8,
+      margin_start: 24,
+      margin_end: 24,
+      margin_top: 12,
+      margin_bottom: 24,
+    });
+    box.append(
+      new Gtk.Label({
+        label: "Press the key combination you want to use.",
+        wrap: true,
+      }),
+    );
+    box.append(
+      new Gtk.Label({
+        label: "Esc to cancel, Backspace to clear.",
+        wrap: true,
+        css_classes: ["dim-label"],
+      }),
+    );
+    view.set_content(box);
+    dialog.set_content(view);
+
+    const controller = new Gtk.EventControllerKey({ propagation_phase: Gtk.PropagationPhase.CAPTURE });
+    controller.connect("key-pressed", (_c, keyval, keycode, state) => {
+      const mask = state & Gtk.accelerator_get_default_mod_mask();
+
+      if (keyval === Gdk.KEY_Escape && !mask) {
+        dialog.close();
+        return Gdk.EVENT_STOP;
+      }
+      if (keyval === Gdk.KEY_BackSpace && !mask) {
+        settings.set_strv(key, []);
+        dialog.close();
+        return Gdk.EVENT_STOP;
+      }
+      // Gtk.accelerator_valid() accepts a bare letter, so it cannot be
+      // relied on alone: binding one would swallow ordinary typing
+      // system-wide. Require a modifier, except for keys that produce no
+      // text at all — the function keys and the XF86 media/extra keys are
+      // safe on their own, and are exactly what a keyboard with more than
+      // twelve F-keys is for.
+      if ((!mask && !isDedicatedKey(keyval)) || !Gtk.accelerator_valid(keyval, mask)) return Gdk.EVENT_STOP;
+
+      const accel = Gtk.accelerator_name_with_keycode(null, keyval, keycode, mask);
+      settings.set_strv(key, [accel]);
+      dialog.close();
+      return Gdk.EVENT_STOP;
+    });
+    dialog.add_controller(controller);
+    dialog.present();
+  }
+
+  // Adds a centered footer crediting the author, linking to the project for
+  // bug reports and feature requests, and showing the version.
+  _addAboutGroup(page) {
+    const footer = new Adw.PreferencesGroup();
+    page.add(footer);
+
+    const url = this.metadata.url ?? "https://github.com/dvdstelt/ClaudeCodeUsage";
+    const issuesUrl = `${url}/issues/new`;
+
+    const buttons = new Gtk.Box({
+      spacing: 8,
+      margin_bottom: 16,
+      halign: Gtk.Align.CENTER,
+    });
+    buttons.append(this._buildLinkButton("♥ Buy me a coffee", KOFI_URL));
+    buttons.append(this._buildLinkButton("Report a bug", issuesUrl));
+    buttons.append(this._buildLinkButton("Request a feature", issuesUrl));
+    footer.add(buttons);
+
+    footer.add(
+      new Gtk.Label({
+        label: "Have an issue, want to suggest a feature, or contribute?",
+        margin_bottom: 4,
+      }),
+    );
+    footer.add(
+      new Gtk.Label({
+        label: `Open a new issue on <a href="${url}">GitHub</a>!`,
+        use_markup: true,
+        margin_bottom: 24,
+      }),
+    );
+
+    footer.add(
+      new Gtk.Label({
+        label: "Created by <b>Dennis van der Stelt</b>",
+        use_markup: true,
+        margin_bottom: 4,
+      }),
+    );
+
+    const version = this.metadata["version-name"] ?? String(this.metadata.version ?? "");
+    if (version) {
+      footer.add(
+        new Gtk.Label({
+          label: `· Multi Usage Tracker v${version} ·`,
+          css_classes: ["dim-label"],
+        }),
+      );
+    }
+  }
+
+  // A plain button that opens a URL in the default browser.
+  _buildLinkButton(label, uri) {
+    const btn = new Gtk.Button({ label, hexpand: false });
+    btn.connect("clicked", () => {
+      Gio.AppInfo.launch_default_for_uri(uri, null);
+    });
+    return btn;
+  }
+
+  // Adds this profile's own sign-in rows: a status line, Connect (which opens
+  // the browser for a PKCE flow), a field to paste the returned code, and
+  // Disconnect. Each profile signs in to its own Claude account, so the tokens
+  // are stored per profile id rather than as one shared credential.
+  _addSignInRows(expander, settings, profile) {
+    const hasInApp = () => getToken(settings, profile.id) !== null;
+
+    const statusRow = new Adw.ActionRow({ title: "Sign-in" });
+    const statusLabel = new Gtk.Label({ valign: Gtk.Align.CENTER });
+    statusRow.add_suffix(statusLabel);
+    expander.add_row(statusRow);
+
+    const setStatus = (msg, good) => {
+      statusLabel.set_label(msg);
+      statusLabel.set_css_classes(good ? ["success"] : ["dim-label"]);
+    };
+
+    const connectRow = new Adw.ActionRow({
+      title: "Connect this profile",
+      subtitle: "Opens your browser to authorize this account.",
+    });
+    const connectButton = new Gtk.Button({
+      label: "Connect",
+      valign: Gtk.Align.CENTER,
+      css_classes: ["suggested-action"],
+    });
+    connectRow.add_suffix(connectButton);
+    connectRow.set_activatable_widget(connectButton);
+    expander.add_row(connectRow);
+
+    const codeRow = new Adw.EntryRow({ title: "Paste code from browser", show_apply_button: true });
+    codeRow.set_visible(false);
+    expander.add_row(codeRow);
+
+    const disconnectRow = new Adw.ActionRow({
+      title: "Disconnect",
+      subtitle: "Forget this profile\u2019s in-app sign-in.",
+    });
+    const disconnectButton = new Gtk.Button({
+      label: "Disconnect",
+      valign: Gtk.Align.CENTER,
+      css_classes: ["destructive-action"],
+    });
+    disconnectRow.add_suffix(disconnectButton);
+    disconnectRow.set_activatable_widget(disconnectButton);
+    disconnectRow.set_visible(hasInApp());
+    expander.add_row(disconnectRow);
+
+    // Claude Code's own credentials win when they are usable, so say so
+    // rather than implying the user still has to sign in here.
+    const refreshStatus = async () => {
+      if (hasInApp()) {
+        setStatus("Connected", true);
+        disconnectRow.set_visible(true);
+      } else if (await claudeCodeCredentialsAvailable(profile.configDir)) {
+        setStatus("Using Claude Code", true);
+        disconnectRow.set_visible(false);
+      } else {
+        setStatus("Not connected", false);
+        disconnectRow.set_visible(false);
+      }
+    };
+    refreshStatus();
+
+    // PKCE state for the in-progress flow.
+    let codeVerifier = null;
+    let oauthState = null;
+
+    connectButton.connect("clicked", () => {
+      codeVerifier = randomToken();
+      oauthState = randomToken();
+      const params = [
+        "response_type=code",
+        `client_id=${encodeURIComponent(CLIENT_ID)}`,
+        `redirect_uri=${encodeURIComponent(REDIRECT_URI)}`,
+        `scope=${encodeURIComponent(OAUTH_SCOPES)}`,
+        `code_challenge=${encodeURIComponent(codeChallenge(codeVerifier))}`,
+        "code_challenge_method=S256",
+        `state=${encodeURIComponent(oauthState)}`,
+      ].join("&");
+      Gio.AppInfo.launch_default_for_uri(`${AUTHORIZE_URL}?${params}`, null);
+      codeRow.set_text("");
+      codeRow.set_visible(true);
+      setStatus("Waiting for code\u2026", false);
+    });
+
+    codeRow.connect("apply", () => {
+      if (!codeVerifier) {
+        setStatus("Click Connect first", false);
+        return;
+      }
+
+      // Accept the raw "code#state" the callback page shows, or a full
+      // pasted callback URL.
+      const input = codeRow.get_text().trim();
+      let code = input;
+      let state = oauthState;
+      try {
+        const url = new URL(input);
+        if (url.searchParams.has("code")) code = url.searchParams.get("code");
+        if (url.searchParams.has("state")) state = url.searchParams.get("state");
+      } catch {
+        const hash = code.indexOf("#");
+        if (hash !== -1) {
+          state = code.slice(hash + 1);
+          code = code.slice(0, hash);
+        }
+      }
+
+      if (!code) {
+        setStatus("Code cannot be empty", false);
+        return;
+      }
+
+      setStatus("Exchanging code\u2026", false);
+      connectButton.set_sensitive(false);
+
+      const body = JSON.stringify({
+        grant_type: "authorization_code",
+        code,
+        state,
+        client_id: CLIENT_ID,
+        redirect_uri: REDIRECT_URI,
+        code_verifier: codeVerifier,
+      });
+      const session = new Soup.Session();
+      const message = Soup.Message.new("POST", TOKEN_URL);
+      message.request_headers.append("Content-Type", "application/json");
+      message.set_request_body_from_bytes("application/json", new GLib.Bytes(encoder.encode(body)));
+
+      session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, null, (sess, result) => {
+        try {
+          const bytes = sess.send_and_read_finish(result);
+          const text = bytes ? decoder.decode(bytes.get_data()) : "";
+          if (message.status_code !== 200) {
+            console.error(`Multi Usage Tracker prefs: token exchange HTTP ${message.status_code}: ${text}`);
+            setStatus(`Error ${message.status_code}`, false);
+            return;
+          }
+          const resp = JSON.parse(text);
+          setToken(settings, profile.id, {
+            accessToken: resp.access_token,
+            refreshToken: resp.refresh_token ?? "",
+            expiresAt: Date.now() + (resp.expires_in ?? DEFAULT_EXPIRES_IN) * 1000,
+          });
+          // prefs is short-lived and may exit as soon as the window
+          // closes; force the token to disk rather than trusting the
+          // backend's async flush, or a sign-in done just before
+          // closing is silently lost.
+          Gio.Settings.sync();
+          setStatus("Connected", true);
+          codeRow.set_visible(false);
+          disconnectRow.set_visible(true);
+          codeVerifier = null;
+          oauthState = null;
+        } catch (e) {
+          console.error(`Multi Usage Tracker prefs: token exchange failed: ${e.message}`);
+          setStatus("Exchange failed", false);
+        } finally {
+          connectButton.set_sensitive(true);
+        }
+      });
+    });
+
+    disconnectButton.connect("clicked", () => {
+      clearToken(settings, profile.id);
+      Gio.Settings.sync();
+      codeRow.set_visible(false);
+      codeVerifier = null;
+      oauthState = null;
+      refreshStatus();
+    });
+  }
+}

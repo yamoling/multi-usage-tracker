@@ -1,0 +1,14 @@
+{
+  "uuid": "multi-usage-tracker@yamoling",
+  "name": "Multi Usage Tracker",
+  "description": "Shows your Claude and Codex subscription tiers and live usage limits (5-hour and 7-day windows) as two indicators in the top bar. Reads your existing Claude Code and Codex CLI credentials; no extra login required.",
+  "shell-version": ["46", "47", "48", "49", "50"],
+  "url": "https://github.com/dvdstelt/ClaudeCodeUsage",
+  "settings-schema": "org.gnome.shell.extensions.claude-usage",
+  "donations": {
+    "kofi": "dvdstelt",
+    "paypal": "dvdstelt"
+  },
+  "version": 14,
+  "version-name": "1.4.2"
+}
